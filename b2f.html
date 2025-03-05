@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keert Bank(xls) to FreeAgent(csv) Converter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .drop-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 20px;
+            background-color: #f9f9f9;
+            cursor: pointer;
+        }
+        .drop-area.highlight {
+            border-color: #2196F3;
+            background-color: #e3f2fd;
+        }
+        .output-area {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            background-color: #f5f5f5;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        h2 {
+            margin-top: 30px;
+        }
+        .button-container {
+            margin-bottom: 30px;
+        }
+        .btn {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background-color: #45a049;
+        }
+        .btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .download-btn {
+            display: none;
+        }
+        .toggle-btn {
+            background-color: #2196F3;
+        }
+        .toggle-btn:hover {
+            background-color: #0b7dda;
+        }
+
+        /* Pretty table styles */
+        .csv-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .csv-table th {
+            background-color: #f2f2f2;
+            padding: 10px;
+            text-align: left;
+            border: 1px solid #ddd;
+            position: sticky;
+            top: 0;
+        }
+        .csv-table td {
+            padding: 8px 10px;
+            border: 1px solid #ddd;
+        }
+        .csv-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .csv-table tr:hover {
+            background-color: #f1f1f1;
+        }
+        .amount-negative {
+            color: #d32f2f;
+            text-align: right;
+        }
+        .amount-positive {
+            color: #388e3c;
+            text-align: right;
+        }
+        .raw-view, .pretty-view {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Bank to FreeAgent Converter</h1>
+
+    <div id="drop-area" class="drop-area">
+        <p>Drag and drop your XLS file here</p>
+        <p>or</p>
+        <input type="file" id="file-input" accept=".xls,.xlsx">
+    </div>
+
+    <h2>Output</h2>
+    <div class="button-container">
+        <button id="toggle-view-btn" class="btn toggle-btn" style="display: none;">Switch to Pretty View</button>
+        <button id="download-btn" class="btn download-btn" disabled>Download CSV</button>
+    </div>
+
+    <div id="raw-output" class="output-area raw-view">CSV data will appear here after processing...</div>
+    <div id="pretty-output" class="output-area pretty-view"></div>
+
+    <script>
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('file-input');
+        const rawOutput = document.getElementById('raw-output');
+        const prettyOutput = document.getElementById('pretty-output');
+        const downloadBtn = document.getElementById('download-btn');
+        const toggleViewBtn = document.getElementById('toggle-view-btn');
+
+        let csvData = '';
+        let fileName = '';
+        let parsedData = [];
+        let currentView = 'raw'; // 'raw' or 'pretty'
+
+        // Prevent default drag behaviors
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+
+        // Highlight drop area when item is dragged over it
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+
+        // Handle dropped files
+        dropArea.addEventListener('drop', handleDrop, false);
+
+        // Handle selected files
+        fileInput.addEventListener('change', handleFiles, false);
+
+        // Handle download button click
+        downloadBtn.addEventListener('click', downloadCSV, false);
+
+        // Handle toggle view button click
+        toggleViewBtn.addEventListener('click', toggleView, false);
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function highlight() {
+            dropArea.classList.add('highlight');
+        }
+
+        function unhighlight() {
+            dropArea.classList.remove('highlight');
+        }
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles({ target: { files } });
+        }
+
+        function handleFiles(e) {
+            const files = e.target.files;
+            if (files.length) {
+                fileName = files[0].name.replace(/\.[^/.]+$/, ""); // Remove extension
+                processFile(files[0]);
+            }
+        }
+
+        function processFile(file) {
+            const reader = new FileReader();
+
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+
+                // Assume the first sheet
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert to JSON
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                // Skip first 4 rows and process
+                parsedData = processData(jsonData.slice(4));
+
+                // Display as CSV
+                displayCSV(parsedData);
+
+                // Also display as pretty table
+                displayPrettyTable(parsedData);
+
+                // Show toggle button
+                toggleViewBtn.style.display = 'inline-block';
+
+                // Set initial view
+                setView('raw');
+            };
+
+            reader.readAsArrayBuffer(file);
+        }
+
+        function formatDate(dateValue) {
+            let date;
+
+            // Check if it's already a Date object
+            if (dateValue instanceof Date) {
+                date = dateValue;
+            } 
+            // Check if it's a number (Excel serial date)
+            else if (typeof dateValue === 'number') {
+                // Excel date serial numbers start from 1/1/1900
+                // 25569 is the number of days between 1/1/1900 and 1/1/1970 (Unix epoch)
+                date = new Date((dateValue - 25569) * 86400 * 1000);
+            }
+            // Try to parse string date
+            else if (typeof dateValue === 'string') {
+                date = new Date(dateValue);
+            }
+            else {
+                return dateValue; // Return as is if we can't parse
+            }
+
+            // Check if date is valid
+            if (isNaN(date.getTime())) {
+                return dateValue; // Return original if invalid
+            }
+
+            // Format as dd/mm/yyyy
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0'); // Months are 0-based
+            const year = date.getFullYear();
+
+            return `${day}/${month}/${year}`;
+        }
+
+        function parseNumber(value) {
+            // Handle different types of input
+            if (value === null || value === undefined) {
+                return 0;
+            }
+
+            if (typeof value === 'number') {
+                return value;
+            }
+
+            // If it's a string, remove commas and other non-numeric characters except decimal point
+            if (typeof value === 'string') {
+                // Remove all commas and any other non-numeric characters except decimal point and minus sign
+                const cleanedValue = value.replace(/[^\d.-]/g, '');
+                return parseFloat(cleanedValue) || 0;
+            }
+
+            return 0;
+        }
+
+        function formatAmount(amount) {
+            // Format to 2 decimal places
+            return parseFloat(amount).toFixed(2);
+        }
+
+        function processData(data) {
+            const result = [];
+
+            // Find column indices
+            const headers = data[0] || [];
+            const dateIndex = headers.findIndex(h => h && h.toString().toLowerCase().includes('date'));
+            const descIndex = headers.findIndex(h => h && h.toString().toLowerCase().includes('description'));
+            const withdrawalIndex = headers.findIndex(h => h && h.toString().toLowerCase().includes('withdrawal'));
+            const depositIndex = headers.findIndex(h => h && h.toString().toLowerCase().includes('deposit'));
+
+            // Process each row
+            for (let i = 1; i < data.length; i++) {
+                const row = data[i];
+                if (!row || row.length === 0) continue;
+
+                const date = row[dateIndex];
+                const description = row[descIndex].trimEnd();
+                const withdrawal = row[withdrawalIndex];
+                const deposit = row[depositIndex];
+
+                if (date) {
+                    // Format date to dd/mm/yyyy
+                    const formattedDate = formatDate(date);
+
+                    // Process withdrawal (negative amount)
+                    if (withdrawal) {
+                        const parsedWithdrawal = parseNumber(withdrawal);
+                        if (parsedWithdrawal !== 0) {
+                            result.push({
+                                date: formattedDate,
+                                amount: -Math.abs(parsedWithdrawal),
+                                description: description || ''
+                            });
+                        }
+                    }
+
+                    // Process deposit (positive amount)
+                    if (deposit) {
+                        const parsedDeposit = parseNumber(deposit);
+                        if (parsedDeposit !== 0) {
+                            result.push({
+                                date: formattedDate,
+                                amount: parsedDeposit,
+                                description: description || ''
+                            });
+                        }
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        function displayCSV(data) {
+            // Create CSV 
+            csvData = '';
+
+            // Add each row
+            data.forEach(row => {
+                csvData += `${row.date},${formatAmount(row.amount)},${(row.description || '').toString().replace(/"/g, '""')}\n`;
+            });
+
+            // Display in output area
+            rawOutput.textContent = csvData;
+
+            // Enable download button
+            downloadBtn.disabled = false;
+            downloadBtn.style.display = 'inline-block';
+        }
+
+        function displayPrettyTable(data) {
+            // Create table
+            let tableHTML = `
+                <table class="csv-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Amount</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            // Add each row
+            data.forEach(row => {
+                const amountClass = parseFloat(row.amount) < 0 ? 'amount-negative' : 'amount-positive';
+                tableHTML += `
+                    <tr>
+                        <td>${row.date}</td>
+                        <td class="${amountClass}">${formatAmount(row.amount)}</td>
+                        <td>${(row.description || '').toString().replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
+                    </tr>
+                `;
+            });
+
+            // Close table
+            tableHTML += `
+                    </tbody>
+                </table>
+            `;
+
+            // Display in pretty output area
+            prettyOutput.innerHTML = tableHTML;
+        }
+
+        function toggleView() {
+            if (currentView === 'raw') {
+                setView('pretty');
+            } else {
+                setView('raw');
+            }
+        }
+
+        function setView(view) {
+            currentView = view;
+
+            if (view === 'raw') {
+                rawOutput.style.display = 'block';
+                prettyOutput.style.display = 'none';
+                toggleViewBtn.textContent = 'Switch to Pretty View';
+            } else {
+                rawOutput.style.display = 'none';
+                prettyOutput.style.display = 'block';
+                toggleViewBtn.textContent = 'Switch to Raw CSV';
+            }
+        }
+
+        function downloadCSV() {
+            if (!csvData) return;
+
+            const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', `${fileName || 'converted'}_transactions.csv`);
+            link.style.visibility = 'hidden';
+
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
