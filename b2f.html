@@ -303,7 +303,7 @@
                 if (!row || row.length === 0) continue;
 
                 const date = row[dateIndex];
-                const description = row[descIndex].trimEnd();
+                const description = row[descIndex].trimEnd().replace(/,/g,"_");
                 const withdrawal = row[withdrawalIndex];
                 const deposit = row[depositIndex];
 
